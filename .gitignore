@@ -1,6 +1,3 @@
-# Animated Java Specific
-debug_packs/
-
 # Logs
 logs
 *.log
@@ -105,6 +102,3 @@ dist
 
 # TernJS port file
 .tern-port
-out/linecounter.txt
-out/linecounter.json
-testPluginExport.json

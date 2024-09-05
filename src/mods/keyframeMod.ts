@@ -1,216 +1,206 @@
-import { isCurrentFormat } from '../blueprintFormat'
-import { PACKAGE } from '../constants'
-import { events } from '../util/events'
-import { ContextProperty, createBlockbenchMod } from '../util/moddingTools'
-import {
-	EASING_DEFAULT,
-	EasingKey,
-	easingFunctions,
-	getEasingArgDefault,
-	hasArgs,
-} from '../util/easing'
+import { ajModelFormat } from '../modelFormat'
+import * as events from '../events'
+import { translate } from '../util/translation'
+// import { applyModelVariant } from '../variants'
 
-interface IEasingProperties {
-	easing?: EasingKey
-	easingArgs?: any[]
-}
+const oldEffectAnimatorDisplayFrame = EffectAnimator.prototype.displayFrame
+// const oldEffectAnimatorStartPreviousSounds = EffectAnimator.prototype.startPreviousSounds
+const OLD_CHANNELS = { ...EffectAnimator.prototype.channels }
 
-createBlockbenchMod(
-	`${PACKAGE.name}:keyframeSelectEventMod`,
-	{
-		originalKeyframeSelect: Blockbench.Keyframe.prototype.select,
-		originalUpdateKeyframeSelection: updateKeyframeSelection,
-		barItem: BarItems.keyframe_interpolation as BarSelect<string>,
-		originalChange: (BarItems.keyframe_interpolation as BarSelect<string>).set,
-	},
-	context => {
-		Blockbench.Keyframe.prototype.select = function (this: _Keyframe, event: any) {
-			if (!isCurrentFormat()) return context.originalKeyframeSelect.call(this, event)
-			const kf = context.originalKeyframeSelect.call(this, event)
-			events.SELECT_KEYFRAME.dispatch(kf)
-			return kf
-		}
+let installed = false
 
-		globalThis.updateKeyframeSelection = function () {
-			if (isCurrentFormat()) return context.originalUpdateKeyframeSelection()
+export function injectCustomKeyframes() {
+	if (installed) return
+	// Add custom channels to Bone Animator
+	// BoneAnimator.addChannel('commands', {
+	// 	name: translate('animated_java.timeline.commands'),
+	// 	mutable: false,
+	// 	max_data_points: 2,
+	// })
 
-			Timeline.keyframes.forEach(kf => {
-				if (kf.selected && Timeline.selected && !Timeline.selected.includes(kf)) {
-					kf.selected = false
-					events.UNSELECT_KEYFRAME.dispatch()
-				}
-				let hasExpressions = false
-				if (kf.transform) {
-					hasExpressions = !!kf.data_points.find(point => {
-						return (
-							!isStringNumber(point.x) ||
-							!isStringNumber(point.y) ||
-							!isStringNumber(point.z)
-						)
-					})
-				}
-				if (hasExpressions != kf.has_expressions) {
-					kf.has_expressions = hasExpressions
+	// Add custom channels to Effect Animator
+	// EffectAnimator.addChannel('animationStates', {
+	// 	name: translate('animated_java.timeline.animation'),
+	// 	mutable: false,
+	// 	max_data_points: 2,
+	// })
+
+	EffectAnimator.addChannel('variants', {
+		name: translate('animated_java.timeline.variant'),
+		mutable: true,
+		max_data_points: 2,
+	})
+
+	EffectAnimator.addChannel('commands', {
+		name: translate('animated_java.timeline.commands'),
+		mutable: false,
+		max_data_points: 2,
+	})
+
+	// Add new KeyframeDataPoint properties
+	new Property(KeyframeDataPoint, 'string', 'variant', {
+		label: translate('animated_java.keyframe.variant'),
+		default: 'default',
+		condition: point => {
+			return point.keyframe.channel === 'variants'
+		},
+		exposed: false,
+	})
+
+	new Property(KeyframeDataPoint, 'string', 'commands', {
+		label: translate('animated_java.keyframe.commands'),
+		condition: point => {
+			return point.keyframe.channel === 'commands'
+		},
+		exposed: false,
+	})
+
+	// new Property(KeyframeDataPoint, 'string', 'animationState', {
+	// 	label: translate('animated_java.keyframe.animationState'),
+	// 	condition: point => {
+	// 		return point.keyframe.channel === 'animationStates'
+	// 	},
+	// 	exposed: false,
+	// })
+
+	new Property(KeyframeDataPoint, 'string', 'executeCondition', {
+		label: translate('animated_java.keyframe.executeCondition'),
+		condition: point => {
+			return ['animationStates', 'variants', 'commands'].includes(
+				point.keyframe.channel as string
+			)
+		},
+		exposed: false,
+	})
+
+	for (const channel of Object.keys(OLD_CHANNELS)) {
+		if (channel === 'sound') continue
+		delete EffectAnimator.prototype.channels[channel]
+	}
+
+	// Modify keyframe functionality
+	EffectAnimator.prototype.displayFrame = function (this: EffectAnimator, inLoop: boolean) {
+		// Default Blockbench Sound keyframe handling
+		if (inLoop && !this.muted.sound) {
+			this.sound.forEach((kf: _Keyframe) => {
+				const diff = kf.time - this.animation.time
+				if (diff >= 0 && diff < (1 / 60) * (Timeline.playback_speed / 100)) {
+					if (kf.data_points[0].file && !kf.cooldown) {
+						const media = new Audio(kf.data_points[0].file as string)
+						media.playbackRate = Math.clamp(Timeline.playback_speed / 100, 0.1, 4.0)
+						media.volume = Math.clamp(settings.volume.value / 100, 0, 1)
+						media.play().catch(() => null)
+						Timeline.playing_sounds.push(media)
+						media.onended = function () {
+							Timeline.playing_sounds.remove(media)
+						}
+						kf.cooldown = true
+						setTimeout(() => {
+							delete kf.cooldown
+						}, 400)
+					}
 				}
 			})
-
-			if (Timeline.selected) {
-				console.log('Selected keyframe:', Timeline.selected[0])
-				events.SELECT_KEYFRAME.dispatch(Timeline.selected[0])
-			}
-
-			return context.originalUpdateKeyframeSelection()
 		}
 
-		context.barItem.set = function (this: BarSelect<string>, value) {
-			const result = context.originalChange.call(this, value)
+		if (!Project || !Project.animated_java_variants) return
+		if (!this.muted.variants) {
+			let after, before, result: _Keyframe | undefined
 
-			if (isCurrentFormat()) {
-				if (Timeline.selected && Timeline.selected.length > 0) {
-					events.SELECT_KEYFRAME.dispatch(Timeline.selected[0])
+			for (const kf of this.variants as _Keyframe[]) {
+				if (kf.time < this.animation.time) {
+					if (!before || kf.time > before.time) {
+						before = kf
+					}
 				} else {
-					events.UNSELECT_KEYFRAME.dispatch()
+					if (!after || kf.time < after.time) {
+						after = kf
+					}
 				}
 			}
 
-			return result
+			if (after && after.time === this.animation.time) {
+				result = after
+			} else if (before) {
+				result = before
+			} else if (after) {
+				result = this.variants.at(-1)
+			}
+
+			if (result) {
+				const variant = Project.animated_java_variants.variants.find(
+					v => result && v.uuid === result.data_points[0].variant
+				)
+				Project.animated_java_variants.select(variant)
+			}
 		}
 
-		return context
-	},
-	context => {
-		Blockbench.Keyframe.prototype.select = context.originalKeyframeSelect
-		globalThis.updateKeyframeSelection = context.originalUpdateKeyframeSelection
-		context.barItem.change = context.originalChange
+		this.last_displayed_time = this.animation.time
 	}
-)
 
-export function reverseEasing(easing?: EasingKey): EasingKey | undefined {
-	if (!easing) return easing
-	if (easing.startsWith('easeInOut')) return easing
-	if (easing.startsWith('easeIn')) return easing.replace('easeIn', 'easeOut')
-	if (easing.startsWith('easeOut')) return easing.replace('easeOut', 'easeIn')
-	return easing
+	// EffectAnimator.prototype.startPreviousSounds = function (this: EffectAnimator) {
+	// 	// Do nothing. Blockbench throws an error if this isn't overwritten.
+	// }
+
+	installed = true
 }
 
-createBlockbenchMod(
-	`${PACKAGE.name}:reverseKeyframesMod`,
-	{
-		action: BarItems.reverse_keyframes as Action,
-		originalClick: (BarItems.reverse_keyframes as Action).click,
-	},
-	context => {
-		context.action.click = function (event?: Event) {
-			context.originalClick.call(this, event)
-			// There's not really an easy way to merge our undo operation with the original one so we'll make a new one instead
-			Undo.initEdit({ keyframes: Timeline.selected || undefined })
+export function extractCustomKeyframes() {
+	if (!installed) return
+	EffectAnimator.prototype.displayFrame = oldEffectAnimatorDisplayFrame
+	// EffectAnimator.prototype.startPreviousSounds = oldEffectAnimatorStartPreviousSounds
 
-			const kfByAnimator: Record<string, _Keyframe[]> = {}
-			for (const kf of Timeline.selected || []) {
-				kfByAnimator[kf.animator.uuid] ??= []
-				kfByAnimator[kf.animator.uuid].push(kf)
-			}
-
-			const kfByAnimatorAndChannel: Record<string, Record<string, _Keyframe[]>> = {}
-			for (const [animatorUuid, keyframes] of Object.entries(kfByAnimator)) {
-				const channel: Record<string, _Keyframe[]> = {}
-				kfByAnimatorAndChannel[animatorUuid] = channel
-				for (const kf of keyframes) {
-					channel[kf.channel] ??= []
-					channel[kf.channel].push(kf)
-				}
-			}
-
-			for (const channelGroups of Object.values(kfByAnimatorAndChannel)) {
-				for (const keyframes of Object.values(channelGroups)) {
-					// Ensure keyframes are in temporal order. Not sure if this is already the case, but it couldn't hurt
-					keyframes.sort((a, b) => a.time - b.time)
-					// Reverse easing direction
-					const easingData: IEasingProperties[] = keyframes.map((kf: _Keyframe) => ({
-						easing: reverseEasing(kf.easing),
-						easingArgs: kf.easingArgs,
-					}))
-					// Shift easing data to the right by one keyframe
-					keyframes.forEach((kf: _Keyframe, i: number) => {
-						if (i == 0) {
-							kf.easing = undefined
-							kf.easingArgs = undefined
-							return
-						}
-						const newEasingData = easingData[i - 1]
-						kf.easing = newEasingData.easing
-						kf.easingArgs = newEasingData.easingArgs
-					})
-				}
-			}
-
-			Undo.finishEdit('Reverse keyframe easing')
-			updateKeyframeSelection()
-			Animator.preview()
-		}
-		return context
-	},
-	context => {
-		context.action.click = context.originalClick
+	for (const channel of Object.keys(OLD_CHANNELS)) {
+		if (channel === 'sound') continue
+		EffectAnimator.prototype.channels[channel] = OLD_CHANNELS[channel]
 	}
-)
 
-function lerp(start: number, stop: number, amt: number): number {
-	return amt * (stop - start) + start
+	KeyframeDataPoint.properties.variant?.delete()
+	KeyframeDataPoint.properties.commands?.delete()
+	// KeyframeDataPoint.properties.animationState?.delete()
+	KeyframeDataPoint.properties.executeCondition?.delete()
+
+	// delete BoneAnimator.prototype.channels.commands
+	// delete BoneAnimator.prototype.commands
+
+	delete EffectAnimator.prototype.channels.variants
+	delete EffectAnimator.prototype.variants
+	delete EffectAnimator.prototype.channels.commands
+	delete EffectAnimator.prototype.commands
+	// delete EffectAnimator.prototype.channels.animationStates
+	// delete EffectAnimator.prototype.animationStates
+
+	installed = false
 }
 
-createBlockbenchMod(
-	`${PACKAGE.name}:keyframeEasingMod`,
-	{
-		originalGetLerp: Blockbench.Keyframe.prototype.getLerp,
-		easingProperty: undefined as ContextProperty<'string'>,
-		easingArgsProperty: undefined as ContextProperty<'array'>,
-	},
-	context => {
-		context.easingProperty = new Property(Blockbench.Keyframe, 'string', 'easing', {
-			default: EASING_DEFAULT,
-			condition: isCurrentFormat(),
-		})
-		context.easingArgsProperty = new Property(Blockbench.Keyframe, 'array', 'easingArgs', {
-			condition: isCurrentFormat(),
-		})
+events.EXTRACT_MODS.subscribe(() => extractCustomKeyframes())
 
-		Blockbench.Keyframe.prototype.getLerp = function (
-			this: _Keyframe,
-			other,
-			axis,
-			amount,
-			allowExpression
-		): number {
-			if (!isCurrentFormat())
-				return context.originalGetLerp.call(this, other, axis, amount, allowExpression)
-
-			const easing = other.easing || 'linear'
-			let easingFunc = easingFunctions[easing]
-			if (hasArgs(easing)) {
-				const arg1 =
-					Array.isArray(other.easingArgs) && other.easingArgs.length > 0
-						? other.easingArgs[0]
-						: getEasingArgDefault(other)
-
-				easingFunc = easingFunc.bind(null, arg1 || 0)
-			}
-			const easedAmount = easingFunc(amount)
-			const start = this.calc(axis)
-			const stop = other.calc(axis)
-			const result = lerp(start, stop, easedAmount)
-
-			if (Number.isNaN(result)) {
-				throw new Error('Invalid easing function or arguments.')
-			}
-			return result
-		}
-
-		return context
-	},
-	context => {
-		context.easingProperty?.delete()
-		context.easingArgsProperty?.delete()
-		Blockbench.Keyframe.prototype.getLerp = context.originalGetLerp
+events.PRE_SELECT_PROJECT.subscribe(project => {
+	if (project.format.id === ajModelFormat.id) {
+		if (!installed) injectCustomKeyframes()
+	} else {
+		if (installed) extractCustomKeyframes()
 	}
-)
+})
+
+function keyframeSetterFactory(channel: string) {
+	return function (kf: _Keyframe, data: any) {
+		const dataPoint = kf.data_points.at(0)
+		if (dataPoint) dataPoint[channel] = data
+	}
+}
+
+function keyframeGetterFactory(channel: string) {
+	return function (kf: _Keyframe) {
+		return kf.data_points.at(0)?.[channel] as string | undefined
+	}
+}
+
+export const getKeyframeVariant = keyframeGetterFactory('variant')
+export const setKeyframeVariant = keyframeSetterFactory('variant')
+export const getKeyframeCommands = keyframeGetterFactory('commands')
+export const setKeyframeCommands = keyframeSetterFactory('commands')
+// export const getKeyframeAnimationState = keyframeGetterFactory('animationState')
+// export const setKeyframeAnimationState = keyframeSetterFactory('animationState')
+export const getKeyframeCondition = keyframeGetterFactory('executeCondition')
+export const setKeyframeCondition = keyframeSetterFactory('executeCondition')

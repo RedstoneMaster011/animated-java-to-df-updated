@@ -1,23 +1,24 @@
-import { BLUEPRINT_FORMAT } from '../blueprintFormat'
-import { PACKAGE } from '../constants'
-import { events } from '../util/events'
+import { ajModelFormat, convertToAJModelFormat } from '../modelFormat'
 import { createBlockbenchMod } from '../util/moddingTools'
+// Cube.all[0].mesh.material = Canvas.wireframeMaterial
 
 createBlockbenchMod(
-	`${PACKAGE.name}:modelFormatPreSelectProjectEvent`,
+	'animated_java:modelFormat',
 	{
-		originalSelect: ModelProject.prototype.select,
+		convertTo: ModelFormat.prototype.convertTo,
 	},
 	context => {
-		ModelProject.prototype.select = function (this: ModelProject) {
-			if (this.format.id === BLUEPRINT_FORMAT.id) {
-				events.PRE_SELECT_PROJECT.dispatch(this)
+		ModelFormat.prototype.convertTo = function (this: ModelFormat) {
+			const result = context.convertTo.call(this)
+			if (this === ajModelFormat) {
+				convertToAJModelFormat()
 			}
-			return context.originalSelect.call(this)
+			return result
 		}
+
 		return context
 	},
 	context => {
-		ModelProject.prototype.select = context.originalSelect
+		ModelFormat.prototype.convertTo = context.convertTo
 	}
 )

@@ -1,253 +1,291 @@
-import { IBlueprintVariantJSON } from './blueprintFormat'
-import { PACKAGE } from './constants'
-import { events } from './util/events'
-import TransparentTexture from './assets/transparent.png'
-import { toSafeFuntionName } from './util/minecraftUtil'
+import { ajModelFormat } from './modelFormat'
+import { openInvalidVariantPopup } from './ui/popups/invalidVariant'
+import * as events from './events'
+import { Subscribable } from './util/subscribable'
 
-const OLD_PROJECT = Project
-// @ts-ignore
-Project = { materials: {} }
-export const TRANSPARENT_TEXTURE = new Texture(
-	{
-		id: `${PACKAGE.name}:transparent_texture`,
-		name: 'Transparent',
-	},
-	'797174ae-5c58-4a83-a630-eefd51007c80'
-).fromDataURL(TransparentTexture)
-export const TRANSPARENT_TEXTURE_MATERIAL = Project!.materials[TRANSPARENT_TEXTURE.uuid]
-export const TRANSPARENT_TEXTURE_RESOURCE_LOCATION = 'animated_java:item/transparent'
-Project = OLD_PROJECT
-
-export class TextureMap {
-	map: Map<string, string>
-
-	constructor() {
-		this.map = new Map()
-	}
-
-	public add(key: string, value: string) {
-		this.map.set(key, value)
-	}
-
-	public get(key: string) {
-		return this.map.get(key)
-	}
-
-	public has(key: string) {
-		return this.map.has(key)
-	}
-
-	public delete(key: string) {
-		this.map.delete(key)
-	}
-
-	/**
-	 * Given a texture or texture uuid, return the mapped texture
-	 */
-	public getMappedTexture(texture: Texture | string): Texture | undefined {
-		const uuid = this.map.get(texture instanceof Texture ? texture.uuid : texture)
-		if (uuid === TRANSPARENT_TEXTURE.uuid) return TRANSPARENT_TEXTURE
-		return Texture.all.find(t => t.uuid === uuid)
-	}
-
-	public setMappedTexture(texture: Texture, mappedTexture: Texture) {
-		this.map.set(texture.uuid, mappedTexture.uuid)
-	}
-
-	public toJSON() {
-		return Object.fromEntries(this.map)
-	}
-
-	public static fromJSON(json: Record<string, string>): TextureMap {
-		const textureMap = new TextureMap()
-		for (const [key, value] of Object.entries(json)) {
-			textureMap.add(key, value)
-		}
-		return textureMap
-	}
-
-	public copy() {
-		const textureMap = new TextureMap()
-		textureMap.map = new Map(this.map)
-		return textureMap
-	}
-
-	public verifyTextures() {
-		for (const [key, value] of this.map) {
-			if (!Texture.all.some(t => t.uuid === value)) {
-				this.map.delete(key)
-			}
-		}
-	}
+export type TextureMap = Record<string, string>
+export interface ITextureMapping {
+	from: string
+	fromTexture?: Texture
+	to: string
+	toTexture?: Texture
 }
 
-export class VariantBoneConfig {
-	bone: string
-
-	constructor(bone: string) {
-		this.bone = bone
-	}
+export interface IBoneConfig {
+	nbt: string
 }
 
 export class Variant {
-	public static all: Variant[] = []
-	public static selected: Variant | undefined
-
-	public id: number
-	public displayName: string
-	public name: string
-	public uuid: string
-	public textureMap: TextureMap
-	public isDefault = false
-	public generateNameFromDisplayName = true
-	public excludedNodes: CollectionItem[] = []
-
-	constructor(displayName: string, isDefault = false) {
-		this.displayName = Variant.makeDisplayNameUnique(this, displayName)
-		this.name = Variant.makeNameUnique(this, this.displayName)
-		this.uuid = guid()
-		this.isDefault = isDefault
-		this.textureMap = new TextureMap()
-		this.id = Variant.all.length
-		Variant.all.push(this)
-		this.select()
-		events.CREATE_VARIANT.dispatch(this)
+	textureMap: TextureMap
+	boneConfig: Record<string, IBoneConfig>
+	default?: boolean
+	_name: string
+	uuid: string
+	constructor(
+		name: string,
+		textureMap?: TextureMap,
+		uuid?: string,
+		boneConfig?: Record<string, IBoneConfig>,
+		public affectedBones: Array<{ name: string; value: string }> = [],
+		public affectedBonesIsAWhitelist = false
+	) {
+		this._name = name
+		this.uuid = uuid || guid()
+		this.textureMap = textureMap || {}
+		this.boneConfig = boneConfig || {}
 	}
 
-	public select() {
-		if (Variant.selected) Variant.selected.unselect()
-		Variant.selected = this
-		Canvas.updateAllFaces()
-		events.SELECT_VARIANT.dispatch(this)
+	get name() {
+		return this._name
 	}
 
-	public unselect() {
-		Variant.selected = undefined
-	}
-
-	public delete() {
-		// Cannot delete default variant
-		if (this.isDefault) return
-
-		const index = Variant.all.indexOf(this)
-		if (index > -1) {
-			Variant.all.splice(index, 1)
+	set name(name: string) {
+		this._name = name
+		if (Project?.animated_java_variants) {
+			this.createUniqueName(Project.animated_java_variants.variants)
 		}
-
-		if (Variant.selected === this) {
-			this.unselect()
-			Variant.selectDefault()
-		}
-
-		events.DELETE_VARIANT.dispatch(this)
 	}
 
-	public toJSON() {
-		const json: IBlueprintVariantJSON = {
+	addTextureMapping(from: string, to: string) {
+		this.textureMap[from] = to
+	}
+
+	removeTextureMapping(from: string) {
+		delete this.textureMap[from]
+	}
+
+	getTexture(id: string) {
+		const result = Texture.all.find(t => t.uuid === id)
+		return result
+	}
+
+	getMappedUuid(uuid: string): string | undefined {
+		const result = Object.entries(this.textureMap).find(([from]) => from === uuid)
+		return result ? result[1] : undefined
+	}
+
+	verifyTextures(silent = false) {
+		const removedMappings: ITextureMapping[] = []
+		for (const mapping of this.textureMapIterator()) {
+			// console.log('textureMap', this.textureMap, 'mapping', mapping)
+			if (!(mapping.fromTexture && mapping.toTexture)) {
+				console.log(
+					`Removing invalid texture mapping from variant '${this.name}':`,
+					mapping
+				)
+				removedMappings.push(mapping)
+				this.removeTextureMapping(mapping.from)
+			}
+			if (mapping.from === mapping.to) {
+				console.log(
+					`Removing redundant texture mapping from variant '${this.name}':`,
+					mapping
+				)
+				this.removeTextureMapping(mapping.from)
+			}
+		}
+		const valid = removedMappings.length === 0
+
+		if (silent) return valid
+		if (!valid) {
+			if (Animator.open && Timeline.playing) Timeline.pause()
+			openInvalidVariantPopup(this, removedMappings)
+		}
+		return valid
+	}
+
+	*textureMapIterator(): Generator<ITextureMapping, void, unknown> {
+		let from: string, to: string
+		// @ts-ignore
+		for ([from, to] of Object.entries(this.textureMap)) {
+			const fromTexture = Texture.all.find(t => t.uuid === from)
+			const toTexture = Texture.all.find(t => t.uuid === to)
+
+			yield {
+				from,
+				fromTexture,
+				to,
+				toTexture,
+			}
+		}
+	}
+
+	createUniqueName(otherVariants: Variant[]) {
+		let name = this.name
+		let i = 1
+		while (otherVariants.find(v => v.name === name && v !== this)) {
+			name = `${this.name.replace(/\d+$/, '')}${i++}`
+		}
+		this._name = name
+	}
+
+	toJSON() {
+		return {
 			name: this.name,
-			display_name: this.displayName,
+			textureMap: this.textureMap,
 			uuid: this.uuid,
-			texture_map: Object.fromEntries(this.textureMap.map),
-			excluded_nodes: this.excludedNodes.map(item => item.value),
+			boneConfig: this.boneConfig,
+			default: this.default,
+			affectedBonesIsAWhitelist: this.affectedBonesIsAWhitelist,
+			affectedBones: this.affectedBones,
 		}
-		if (this.isDefault) {
-			json.is_default = true
-		}
-		return json
 	}
 
-	public duplicate() {
-		const variant = new Variant(this.displayName, false)
-		variant.uuid = guid()
-		variant.isDefault = false
-		variant.generateNameFromDisplayName = this.generateNameFromDisplayName
-		variant.textureMap = this.textureMap.copy()
-		variant.excludedNodes = this.excludedNodes.map(item => ({ ...item }))
-		variant.select()
+	static fromJSON(json: {
+		name: string
+		textureMap: TextureMap
+		uuid: string
+		boneConfig: Record<string, IBoneConfig>
+		affectedBones?: Array<{ name: string; value: string }>
+		affectedBonesIsAWhitelist?: boolean
+	}) {
+		return new Variant(
+			json.name,
+			json.textureMap,
+			json.uuid,
+			json.boneConfig,
+			json.affectedBones,
+			json.affectedBonesIsAWhitelist
+		)
 	}
 
-	public verifyTextureMap() {
-		this.textureMap.verifyTextures()
-	}
-
-	public static fromJSON(json: IBlueprintVariantJSON, isDefault = false): Variant {
-		const variant = new Variant(json.display_name, isDefault)
-		variant.uuid = json.uuid
-		for (const [key, value] of Object.entries(json.texture_map)) {
-			variant.textureMap.add(key, value)
-		}
-		variant.excludedNodes = json.excluded_nodes
-			.map(uuid => {
-				const group = Group.all.find(group => group.uuid === uuid)
-				return group ? { name: group.name, value: uuid } : undefined
-			})
-			.filter(Boolean) as CollectionItem[]
-		return variant
-	}
-
-	public static makeDisplayNameUnique(variant: Variant, displayName: string): string {
-		if (!Variant.all.some(v => v !== variant && v.displayName === displayName)) {
-			return displayName
-		}
-
-		let i = 1
-		const match = displayName.match(/\d+$/)
-		if (match) {
-			i = parseInt(match[0])
-			displayName = displayName.slice(0, -match[0].length)
-		}
-
-		let maxTries = 1000
-		while (maxTries-- > 0) {
-			const newName = `${displayName}${i}`
-			if (!Variant.all.some(v => v !== variant && v.displayName === newName)) {
-				return newName
-			}
-			i++
-		}
-
-		throw new Error('Could not make Variant display name unique!')
-	}
-
-	public static makeNameUnique(variant: Variant, name: string): string {
-		name = toSafeFuntionName(name)
-		if (!Variant.all.some(v => v !== variant && v.name === name)) {
-			return name
-		}
-
-		let i = 1
-		const match = name.match(/\d+$/)
-		if (match) {
-			i = parseInt(match[0])
-			name = name.slice(0, -match[0].length)
-		}
-
-		let maxTries = 1000
-		while (maxTries-- > 0) {
-			const newName = `${name}${i}`
-			if (!Variant.all.some(v => v !== variant && v.name === newName)) {
-				return newName
-			}
-			i++
-		}
-
-		throw new Error('Could not make Variant name unique!')
-	}
-
-	public static selectDefault() {
-		const variant = Variant.all.find(v => v.isDefault)
-		if (variant) variant.select()
-	}
-
-	public static getDefault(): Variant {
-		return Variant.all.find(v => v.isDefault) ?? Variant.all[0]
+	clone(): Variant {
+		return new Variant(
+			this.name,
+			{ ...this.textureMap },
+			guid(),
+			{ ...this.boneConfig },
+			this.affectedBones,
+			this.affectedBonesIsAWhitelist
+		)
 	}
 }
 
-events.SELECT_PROJECT.subscribe(project => {
-	project.variants ??= []
-	Variant.all = project.variants
-})
-events.UNSELECT_PROJECT.subscribe(() => {
-	Variant.all = []
-})
+interface IVariantsContainerEvent {
+	type: 'add' | 'remove' | 'select'
+	variant?: Variant
+}
+
+export class VariantsContainer extends Subscribable<IVariantsContainerEvent> {
+	variants: Variant[]
+	private _selectedVariant?: Variant
+	constructor(variants?: Variant[]) {
+		super()
+		this.variants = variants || []
+	}
+
+	get selectedVariant() {
+		return this._selectedVariant
+	}
+
+	set selectedVariant(variant: Variant | undefined) {
+		this._selectedVariant = variant
+		this.dispatch({
+			type: 'select',
+			variant,
+		})
+	}
+
+	select(variant: Variant = this.defaultVariant) {
+		this.selectedVariant = variant
+		Canvas.updateAllFaces()
+		requestAnimationFrame(() => {
+			Canvas.updateAllFaces()
+		})
+	}
+
+	addVariant(variant: Variant, isDefault = false): Variant {
+		console.log('Adding variant: ' + variant.name)
+
+		let v
+		if (
+			(v = this.variants.find(
+				v => (v.name === variant.name || v.uuid === variant.uuid) && v !== variant
+			))
+		) {
+			this.variants.splice(this.variants.indexOf(v), 1, variant)
+		} else this.variants.push(variant)
+
+		if (isDefault || this.variants.length === 1) this.defaultVariant = variant
+
+		this.sortVariants()
+
+		this.dispatch({
+			type: 'add',
+			variant,
+		})
+		return variant
+	}
+
+	removeVariant(variant: Variant) {
+		// Can't delete default variant
+		if (variant.default) return
+		console.log('Deleting variant: ' + variant.name)
+		this.variants.splice(this.variants.indexOf(variant), 1)
+		// Make sure we don't have an empty variant list
+		if (this.variants.length === 0) {
+			const v = new Variant('default')
+			this.defaultVariant = this.addVariant(v)
+		}
+		// Select the default variant if we're deleting the selected variant
+		if (this.selectedVariant === variant) {
+			this.select(this.defaultVariant)
+		}
+
+		this.dispatch({
+			type: 'remove',
+			variant,
+		})
+	}
+
+	get defaultVariant() {
+		const result = this.variants.find(v => v.default)
+		if (!result) {
+			console.log('No default variant found, setting first variant as default')
+			if (this.variants.length === 0) {
+				console.log('No variants found, creating default variant')
+				return (this.defaultVariant = this.addVariant(new Variant('default')))
+			}
+			return (this.defaultVariant = this.variants[0])
+		}
+		return result
+	}
+
+	set defaultVariant(variant: Variant) {
+		variant.default = true
+		variant.textureMap = {}
+		variant.affectedBones = []
+		variant.affectedBonesIsAWhitelist = false
+		for (const v of this.variants) {
+			if (v !== variant) v.default = false
+		}
+	}
+
+	verifyTextures(silent = false) {
+		for (const variant of this.variants) {
+			variant.verifyTextures(silent)
+		}
+	}
+
+	sortVariants() {
+		this.variants.sort((a, b) => {
+			if (a.default) return -1
+			if (b.default) return 1
+			return a.name.localeCompare(b.name)
+		})
+	}
+}
+
+function updateProjectVariants() {
+	if (!Project) return
+	if (Format === ajModelFormat) {
+		if (!Project.animated_java_variants)
+			Project.animated_java_variants = new VariantsContainer()
+		Project.animated_java_variants.verifyTextures()
+	}
+	console.log('updateProjectVariants', Project)
+}
+
+events.LOAD_PROJECT.subscribe(updateProjectVariants)
+events.CONVERT_PROJECT.subscribe(updateProjectVariants)
+events.SELECT_PROJECT.subscribe(updateProjectVariants)
