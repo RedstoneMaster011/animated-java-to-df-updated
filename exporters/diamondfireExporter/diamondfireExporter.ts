@@ -36,16 +36,12 @@ export function loadExporter() {
 					description: API.translate(
 						'animated_java.exporters.diamondfire_exporter.settings.mod.description'
 					).split('\n'),
-					defaultValue: 1,
+					defaultValue: 0,
 					options: [
-						{
-							name: 'Recode (DONT USE (OUTDATED), USE CODECLIENT INSTEAD)',
-							value: 'Recode',
-						},
 						{
 							name: 'Codeclient',
 							value: 'Codeclient',
-						},
+						}
 					],
 				}),
 			}
