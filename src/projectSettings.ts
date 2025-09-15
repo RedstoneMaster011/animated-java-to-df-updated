@@ -184,7 +184,7 @@ export function getDefaultProjectSettings(): IAnimatedJavaProjectSettings {
 			defaultValue: 0,
 			options: [
 				{
-					name: '1.21.1+',
+					name: '1.20.5+',
 					value: '1.20+',
 				}
 			],
