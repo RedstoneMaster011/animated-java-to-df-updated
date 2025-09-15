@@ -36,10 +36,17 @@ export function loadExporter() {
 					description: API.translate(
 						'animated_java.exporters.diamondfire_exporter.settings.mod.description'
 					).split('\n'),
+<<<<<<< HEAD
 					defaultValue: 0,
 					options: [
 						{
 							name: 'Recode',
+=======
+					defaultValue: 1,
+					options: [
+						{
+							name: 'Recode (DONT USE (OUTDATED), USE CODECLIENT INSTEAD)',
+>>>>>>> 79becc1 (Initial commit)
 							value: 'Recode',
 						},
 						{
