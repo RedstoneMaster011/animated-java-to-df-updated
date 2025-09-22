@@ -72,7 +72,7 @@ animated_java.project_settings.resourcepack_group: Resource Pack
 
 animated_java.project_settings.rig_item: Rig Item
 animated_java.project_settings.rig_item.description: |-
-    The item to use to display the models used in the rig.
+    The item to use to display the models used in the rig. (WARNING, If You Use A Block Then The Base Item Will Not Be Textured. Please Use An Item To Minigate This Issue)
 animated_java.project_settings.rig_item.error.unset: |-
     Rig Item cannot be empty
 animated_java.project_settings.rig_item.error.space: |-
