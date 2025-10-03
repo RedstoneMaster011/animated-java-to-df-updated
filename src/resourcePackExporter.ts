@@ -41,13 +41,14 @@ export async function exportResources(
   const animatedJavaFolder = assetsFolder.newFolder("animated_java");
 
   const minecraftRoot = assetsFolder.newFolder("minecraft");
-  const minecraftModelsFolder = minecraftRoot.newFolder("models");
   let minecraftItemsFolder;
 
   if (version === 0) {
-	minecraftItemsFolder = minecraftModelsFolder.newFolder("item");
+    const minecraftModelsFolder = minecraftRoot.newFolder("models");
+	  minecraftItemsFolder = minecraftModelsFolder.newFolder("item");
   } else {
-	minecraftItemsFolder = minecraftModelsFolder.newFolder("items");
+    const minecraftModelsFolder = minecraftRoot;
+	  minecraftItemsFolder = minecraftModelsFolder.newFolder("items");
   }
 
   const [rigItemNamespace, rigItemName] = projectSettings.rig_item.value.split(":");
@@ -228,11 +229,11 @@ export async function exportResources(
 		{ skipEmptyFolders: true }
 	);
   } else {
-	await fs.promises.mkdir(path.join(resourcePackPath, "assets/minecraft/models/items"), {
+	await fs.promises.mkdir(path.join(resourcePackPath, "assets/minecraft/items"), {
 		recursive: true
 	});
 	await minecraftItemsFolder.writeChildrenToDisk(
-		path.join(resourcePackPath, "assets/minecraft/models/items"),
+		path.join(resourcePackPath, "assets/minecraft/items"),
 		{ skipEmptyFolders: true }
 	);
   }
