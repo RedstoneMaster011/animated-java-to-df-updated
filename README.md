@@ -16,7 +16,7 @@
 </h3>
 <br/>
 
-# Please Use Blockbench 4.12.0 - 4.12.6 ONLY
+# Please Use Blockbench 4.12.0 - 4.12.6 ONLY LATER VERSIONS WILL NOT WORK
 
 # How to Install
 
